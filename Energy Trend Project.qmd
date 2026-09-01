@@ -1,0 +1,209 @@
+---
+title: "Energy Trend Project"
+author: "Bryan Depew"
+format: 
+  html:
+    toc: true
+    toc-location: left
+    theme: cosmo
+    code-fold: true
+execute:
+  warning: false
+  message: false
+  echo: true
+---
+
+##Mission Statement:
+
+Clean and utilize U.S Energy Information Administration data to uncover and clearly communicate trends in energy production across natural gas, coal, petroleum/oil, and biomass/waste energy sectors. Apply findings to geosptaial state polygons (tigris package) to emphasize regional differences and fluctuations in energy use and production.
+
+
+
+## Loading necessary packages and setting energy categories of interest
+```{r}
+
+library(tidyverse)
+library(data.table)
+library(tigris)
+library(sf)
+library(dplyr)
+library(ggplot2)
+
+options(tigris_use_cache = TRUE)
+
+categories_of_interest <- c("SUN", "NG", "OG", "WAT", "BIT", "SUB", "WND", "RC", "WC", "DFO", "RFO", "WO", "JF", "PG", "PC", "NUC", "WDS", "WDL", "BLQ", "LFG", "MSB", "MSN", "OBG", "OBL", "OBS", "AB", "SLW", "TDF" )
+
+solar_cats <- c("SUN")
+wind_cats <- c("WND")
+hydro_cats <- c("WAT")
+nat_gas_cats<- c("NG", "OG")
+coal_cats <- c("BIT", "SUB", "RC", "WC")
+pet_oil_cats<- c("DFO", "RFO", "WO", "JF", "PG", "PC")
+bio_waste_cats<- c("WDS", "WDL", "BLQ", "LFG", "MSB", "MSN", "OBG", "OBL", "OBS", "AB", "SLW", "TDF")
+
+
+
+
+
+```
+
+
+
+## Create and filter dataset of power plants and their energy sectors
+```{r} 
+
+plant_data_2023 <- read.csv("C:/Users/bgdep/Downloads/Energy Trend Project/List_of_plants_for_all_fuels_South_Atlantic_(total)_all_sectors.csv", skip = 4)%>%
+  filter(Fuel.Types %in% categories_of_interest)
+
+plant_data_2023 <- plant_data_2023%>%
+  mutate(fuel_cat = recode(Fuel.Types,
+                           "SUN" = "SOLAR",
+                           "WND" = "WIND",
+                           "WAT" = "HYDRO",
+                           "NG" = "NATURAL GAS",
+                           "OG" = "NATURAL GAS",
+                           "BIT" = "COAL",
+                           "SUB" = "COAL",
+                           "RC" = "COAL",
+                           "WC" = "COAL",
+                           "DFO" = "PETROLEUM/OIL",
+                           "RFO" = "PETROLEUM/OIL",
+                           "WO" = "PETROLEUM/OIL",
+                           "JF" = "PETROLEUM/OIL",
+                           "PG" = "PETROLEUM/OIL",
+                           "PC" = "PETROLEUM/OIL",
+                           "WDS" = "BIOMASS/WASTE",
+                           "WDL" = "BIOMASS/WASTE",
+                           "BLQ" = "BIOMASS/WASTE", 
+                           "LFG" = "BIOMASS/WASTE",
+                           "MSB" = "BIOMASS/WASTE",
+                           "MSN" = "BIOMASS/WASTE",
+                           "OBG" = "BIOMASS/WASTE",
+                           "OBL" = "BIOMASS/WASTE",
+                           "OBS" = "BIOMASS/WASTE",
+                           "AB" = "BIOMASS/WASTE",
+                           "SLW" = "BIOMASS/WASTE",
+                           "TDF" = "BIOMASS/WASTE"))%>%
+                           select(c("State","Plant.Code", "fuel_cat"))
+```
+
+
+#Create, modify, and clean data set of states and their corresponding energy production by sector. Identify predominant fuel type by state and year.
+```{r}
+
+gen_data <- read.csv("C:/Users/bgdep/Downloads/Energy Trend Project/Net_generation_for_all_sectors.csv", skip = 4)
+gen_data <- na.omit(gen_data)%>%
+  mutate(STATEID = NA)%>%
+  mutate(across(4:24, as.numeric))
+
+for (i in 1:nrow(gen_data)) {
+  key <- gen_data$source.key[i]
+  pieces <- strsplit(key, "-")[[1]]
+  gen_data$STATEID[i] <- pieces[2]
+
+  first_part <- pieces[1]
+  pieces2 <- strsplit(first_part, "\\.")[[1]]
+  gen_data$FUEL[i] <- pieces2[3]
+}
+
+gen_categories_of_interest <- c("SUN", "TSN", "STH", "SPV", "DPV",
+                                 "WND",
+                                 "HYC", "HPS",
+                                 "NG", "OOG",
+                                 "COW",
+                                 "PEL", "PC",
+                                 "BIO", "WAS", "WWW")
+
+gen_data <- gen_data %>%
+  mutate(fuel_cat = recode(FUEL,
+                           "SUN" = "SOLAR", "TSN" = "SOLAR", "STH" = "SOLAR", "SPV" = "SOLAR", "DPV" = "SOLAR",
+                           "WND" = "WIND",
+                           "HYC" = "HYDRO", "HPS" = "HYDRO",
+                           "NG" = "NATURAL GAS",
+                           "COW" = "COAL",
+                           "PEL" = "PETROLEUM/OIL", "PC" = "PETROLEUM/OIL",
+                           "BIO" = "BIOMASS/WASTE"))
+
+gen_data <- gen_data %>%
+  filter(FUEL %in% gen_categories_of_interest)
+
+south_atlantic_states <- states() %>%
+  filter(STUSPS %in% unique(gen_data$STATEID))
+##Pivot longer to easily utilize data
+gen_long <- gen_data %>%
+  pivot_longer(
+    cols = starts_with("X"),
+    names_to = "year",
+    values_to = "generation"
+  ) %>%
+  mutate(year = as.numeric(gsub("X", "", year)))
+
+## find the dominant fuel type per state, per year
+dominant_fuel_by_year <- gen_long %>%
+  group_by(STATEID, year) %>%
+  slice_max(generation, n = 1, with_ties = FALSE) %>%
+  select(STATEID, year, FUEL)
+
+```
+
+
+##Create geospatial map of findings
+```{r}
+
+map_data <- south_atlantic_states %>%
+  left_join(dominant_fuel_by_year, by = c("STUSPS" = "STATEID"))%>%
+  mutate("Predominant Fuel Type" = recode(FUEL,
+                            "COW" = "Coal",
+                            "NG" = "Natural Gas",
+                            "PEL" = "Petroleum/Oil",
+                            "BIO" = "Biomass/Waste"))
+
+map_data_subset <- map_data %>%
+  filter(year %in% c(2005, 2010, 2015, 2020, 2025))
+
+map <- ggplot(map_data_subset) +
+  geom_sf(aes(fill = `Predominant Fuel Type`)) +
+  facet_wrap(~ year) +
+  theme_void()
+
+plot(map)
+```
+
+##Communicate trend of energy production over time by sector
+
+```{r}
+coal_plot <- gen_long %>%
+  filter(fuel_cat == "COAL") %>%
+  ggplot(aes(x = year, y = generation, color = STATEID, group = STATEID)) +
+  geom_line()+
+  labs(title = "Coal Energy Generation by State (in thousand megawatthours)", y= "Energy Generation", x = "Year" )
+
+coal_plot
+
+nat_gas_plot <- gen_long %>%
+  filter(fuel_cat == "NATURAL GAS") %>%
+  ggplot(aes(x = year, y = generation, color = STATEID, group = STATEID)) +
+  geom_line()+
+  labs(title = "Natural Gas Energy Generation by State (in thousand megawatthours)", y= "Energy Generation", x = "Year" )
+
+nat_gas_plot
+
+pet_oil_plot <- gen_long %>%
+  filter(fuel_cat == "PETROLEUM/OIL") %>%
+  ggplot(aes(x = year, y = generation, color = STATEID, group = STATEID)) +
+  geom_line()+
+  labs(title = "Petroleum/Oil Energy Generation by State (in thousand megawatthours)", y= "Energy Generation", x = "Year" )
+
+pet_oil_plot
+
+biomass_plot <- gen_long %>%
+  filter(fuel_cat == "BIOMASS/WASTE") %>%
+  ggplot(aes(x = year, y = generation, color = STATEID, group = STATEID)) +
+  geom_line()+
+  labs(title = "Biomass/Waste Energy Generation by State (in thousand megawatthours)", y= "Energy Generation", x = "Year" )
+
+biomass_plot
+
+
+```
+The `echo: false` option disables the printing of code (only output is displayed).
